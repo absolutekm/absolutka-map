@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Absolutka Карта</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; font-family: -apple-system, sans-serif; }
+        #map { height: 100vh; width: 100%; }
+        .panel {
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            background: #1c1c1e;
+            border-radius: 16px 16px 0 0;
+            padding: 16px;
+            box-shadow: 0 -4px 20px rgba(0,0,0,0.5);
+            z-index: 1000;
+            color: #fff;
+        }
+        .panel input {
+            width: 100%; padding: 12px;
+            border-radius: 10px; border: none;
+            background: #2c2c2e; color: #fff;
+            font-size: 16px; margin-bottom: 10px;
+        }
+        .panel input::placeholder { color: #8e8e93; }
+        .panel button {
+            width: 100%; padding: 12px;
+            border-radius: 10px; border: none;
+            font-size: 16px; font-weight: 600;
+            margin-bottom: 8px; cursor: pointer;
+        }
+        .btn-primary { background: #0a84ff; color: #fff; }
+        .btn-secondary { background: #3a3a3c; color: #fff; }
+        .btn-geo { background: #30d158; color: #000; }
+        .result {
+            background: #2c2c2e;
+            border-radius: 10px;
+            padding: 12px;
+            margin-bottom: 10px;
+            font-size: 14px;
+            display: none;
+        }
+        .result.show { display: block; }
+        .result b { color: #0a84ff; }
+        .hint {
+            text-align: center;
+            color: #8e8e93;
+            font-size: 12px;
+            margin-top: 6px;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+
+    <div class="panel">
+        <div class="result" id="result"></div>
+        <input type="text" id="destInput" placeholder="Куда идём? (адрес или место)"/>
+        <button class="btn-secondary" onclick="searchDestination()">🔍 Найти</button>
+        <button class="btn-primary" onclick="buildRoute()">🗺 Построить маршрут</button>
+        <button class="btn-geo" onclick="goToMyLocation()">📍 Моё местоположение</button>
+        <div class="hint">Absolutka Карта · OpenStreetMap</div>
+    </div>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.ready();
+        tg.expand();
+
+        const map = L.map('map', {
+            zoomControl: false,
+            attributionControl: false
+        }).setView([55.751244, 37.618423], 12);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19
+        }).addTo(map);
+
+        L.control.zoom({ position: 'topright' }).addTo(map);
+
+        let myMarker = null;
+        let destMarker = null;
+        let routeLine = null;
+        let myCoords = null;
+        let destCoords = null;
+
+        // Автоматически запрашиваем геолокацию при открытии
+        goToMyLocation();
+
+        function goToMyLocation() {
+            if (!navigator.geolocation) {
+                alert('Геолокация не поддерживается');
+                return;
+            }
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    myCoords = [pos.coords.latitude, pos.coords.longitude];
+                    map.setView(myCoords, 15);
+                    if (myMarker) map.removeLayer(myMarker);
+                    myMarker = L.marker(myCoords, { title: 'Я здесь' })
+                        .addTo(map)
+                        .bindPopup('📍 Я здесь')
+                        .openPopup();
+                },
+                (err) => {
+                    console.log('Geolocation error:', err);
+                },
+                { enableHighAccuracy: true, timeout: 10000 }
+            );
+        }
+
+        async function searchDestination() {
+            const q = document.getElementById('destInput').value.trim();
+            if (!q) return;
+            const result = document.getElementById('result');
+            result.classList.add('show');
+            result.innerHTML = '🔍 Ищу...';
+
+            try {
+                const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1&accept-language=ru`;
+                const res = await fetch(url);
+                const data = await res.json();
+                if (!data.length) {
+                    result.innerHTML = '❌ Ничего не найдено';
+                    return;
+                }
+                destCoords = [parseFloat(data[0].lat), parseFloat(data[0].lon)];
+                if (destMarker) map.removeLayer(destMarker);
+                destMarker = L.marker(destCoords, { title: 'Цель' })
+                    .addTo(map)
+                    .bindPopup('🎯 ' + data[0].display_name)
+                    .openPopup();
+                map.setView(destCoords, 14);
+                result.innerHTML = `✅ Найдено: <b>${data[0].display_name}</b>`;
+            } catch (e) {
+                result.innerHTML = '❌ Ошибка поиска';
+            }
+        }
+
+        async function buildRoute() {
+            const result = document.getElementById('result');
+            result.classList.add('show');
+
+            if (!myCoords) {
+                result.innerHTML = '📍 Сначала нажми «Моё местоположение»';
+                return;
+            }
+
+            let target = destCoords;
+            if (!target) {
+                const q = document.getElementById('destInput').value.trim();
+                if (!q) {
+                    result.innerHTML = '🎯 Введи адрес назначения и нажми «Найти»';
+                    return;
+                }
+                await searchDestination();
+                target = destCoords;
+                if (!target) return;
+            }
+
+            result.innerHTML = '🗺 Строю маршрут...';
+
+            try {
+                const url = `https://router.project-osrm.org/route/v1/foot/${myCoords[1]},${myCoords[0]};${target[1]},${target[0]}?overview=full&geometries=geojson`;
+                const res = await fetch(url);
+                const data = await res.json();
+
+                if (!data.routes || !data.routes.length) {
+                    result.innerHTML = '❌ Маршрут не найден';
+                    return;
+                }
+
+                const route = data.routes[0];
+                const distKm = (route.distance / 1000).toFixed(2);
+                const timeMin = Math.round(route.duration / 60);
+
+                const coords = route.geometry.coordinates.map(c => [c[1], c[0]]);
+                if (routeLine) map.removeLayer(routeLine);
+                routeLine = L.polyline(coords, { color: '#0a84ff', weight: 5 }).addTo(map);
+
+                map.fitBounds(routeLine.getBounds(), { padding: [50, 50] });
+
+                result.innerHTML = `🗺 <b>Маршрут построен</b><br>📏 Расстояние: <b>${distKm} км</b><br>⏱ Время: <b>~${timeMin} мин</b> (пешком)`;
+            } catch (e) {
+                result.innerHTML = '❌ Ошибка построения маршрута';
+            }
+        }
+    </script>
+</body>
+</html>
